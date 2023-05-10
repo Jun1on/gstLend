@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 pragma solidity 0.8.19;
 
 interface IERC20 {
@@ -11,15 +13,10 @@ interface IERC20 {
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-interface GDtoken is IERC20 {
-    function mint(address recipient, uint256 _amount) external;
-    function burn(address _from, uint256 _amount) external ;
-}
-
 interface IGMDVault {
     struct PoolInfo {
         IERC20 lpToken;    
-        GDtoken GDlptoken; 
+        IERC20 GDlptoken; 
         uint256 EarnRateSec;     
         uint256 totalStaked; 
         uint256 lastUpdate; 
@@ -34,9 +31,11 @@ interface IGMDVault {
 }
 
 contract GSTLend is Ownable, ReentrancyGuard {
-    IGMDVault.PoolInfo public gmdPool;
+    IGMDVault public GMDVault;
+    uint256 public poolId;
     IERC20 public gmdUSDC;
     IERC20 public USDC;
+    uint256 private immutable decimalDiff;
 
     uint256 public totalDeposits;
     uint256 public totalxDeposits;
@@ -44,16 +43,15 @@ contract GSTLend is Ownable, ReentrancyGuard {
     uint256 public totalxBorrows;
     uint256 public totalGmdDeposits;
 
-    uint256 public gmdDepositCap = 500000 * 1e18;
-
     mapping(address => uint256) public xdeposits;
     mapping(address => uint256) public xborrows;
     mapping(address => uint256) public gmdDeposits;
 
-    uint256 LTV = 8000;
-    uint256 private immutable decimalDiff;
+    // security caps
+    uint256 public gmdDepositCap = 500000 * 1e18;
+    uint256 public maxRate = 11 * 1e17;
 
-    // idk what params are good here yet
+    uint256 LTV = 8000;
     uint256 public base   = 1e18 * 2;
     uint256 public slope1 = 1e18 * 1/10;
     uint256 public kink   = 1e18 * 80;
@@ -86,28 +84,26 @@ contract GSTLend is Ownable, ReentrancyGuard {
     // User address => rewards to be claimed
     mapping(address => uint) public rewards;
 
-    // User address => staked amount
-    mapping(address => uint) public balanceOf;
-
     // Initialize the lending pool with the gmd vaults
-    constructor(address _GMDVault, uint256 _gmdPoolId) {
-        gmdPool = IGMDVault(_GMDVault).poolInfo(_gmdPoolId);
-        gmdUSDC = gmdPool.GDlptoken;
-        USDC = gmdPool.lpToken;
+    constructor(address _GMDVault, uint256 _poolId) {
+        GMDVault = IGMDVault(_GMDVault);
+        poolId = _poolId;
+        gmdUSDC = GMDVault.poolInfo(poolId).GDlptoken;
+        USDC = GMDVault.poolInfo(poolId).lpToken;
         decimalDiff = 18 - USDC.decimals(); // decimal handling
     }
 
     function deposit(uint256 _amount) external nonReentrant updateReward(msg.sender) {
         USDC.transferFrom(msg.sender, address(this), _amount);
-        uint256 xamount = _amount * (10**decimalDiff) * (1e18/usdPerDepositedUSDC());
+        uint256 xamount = _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC();
         xdeposits[msg.sender] += xamount;
         totalDeposits += _amount * (10**decimalDiff);
         totalxDeposits += xamount;
     }
 
     function withdraw(uint256 _amount) external nonReentrant updateReward(msg.sender) {
-        require(xdeposits[msg.sender] >= _amount * (10**decimalDiff) * (1e18/usdPerDepositedUSDC()), "GSTLend: Insufficient balance");
-        uint256 xamount = _amount * (10**decimalDiff) * (1e18/usdPerDepositedUSDC());
+        require(xdeposits[msg.sender] >= _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC(), "GSTLend: Insufficient balance");
+        uint256 xamount = _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC();
         xdeposits[msg.sender] -= xamount;
         totalDeposits -= _amount * (10**decimalDiff);
         totalxDeposits -= xamount;
@@ -133,7 +129,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
         uint256 totalBorrowable = valueOfDeposits(msg.sender)*LTV/(10**4);
         uint256 borrowable = totalBorrowable - xborrows[msg.sender]*(usdPerBorrowedUSDC()/1e18);
         require(_amount * (10**decimalDiff) <= borrowable, "GSTLend: Insufficient collateral");
-        uint256 xamount = _amount * (10**decimalDiff) * (1e18/usdPerBorrowedUSDC());
+        uint256 xamount = _amount * (10**decimalDiff) * 1e18/usdPerBorrowedUSDC();
         xborrows[msg.sender] += xamount;
         totalBorrows += _amount * (10**decimalDiff);
         totalxBorrows += xamount;
@@ -142,7 +138,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
     }
 
     function repay(uint256 _amount) external nonReentrant {
-        uint256 borrows = xborrows[msg.sender] * (usdPerBorrowedUSDC()/1e18);
+        uint256 borrows = xborrows[msg.sender] * usdPerBorrowedUSDC()/1e18;
         uint256 xamount;
         if (_amount * (10**decimalDiff) <= borrows) {
             // repay all
@@ -151,7 +147,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
             xborrows[msg.sender] -= xamount;
             totalBorrows -= borrows;
         } else {
-            xamount = _amount * (10**decimalDiff) * (1e18/usdPerBorrowedUSDC());
+            xamount = _amount * (10**decimalDiff) * 1e18/usdPerBorrowedUSDC();
             USDC.transferFrom(msg.sender, address(this), _amount);
             xborrows[msg.sender] -= xamount;
             totalBorrows -= _amount * 10**decimalDiff;
@@ -163,7 +159,8 @@ contract GSTLend is Ownable, ReentrancyGuard {
     // returns how much one gmdUSDC is worth
     function usdPerGmdUSDC() internal view returns (uint256) {
         uint256 totalShares = gmdUSDC.totalSupply();
-        return gmdPool.totalStaked * 1e18 / totalShares;
+        uint256 calculatedRate = GMDVault.poolInfo(poolId).totalStaked * 1e18 / totalShares;
+        return _min(calculatedRate, maxRate);
     }
 
     function usdPerDepositedUSDC() internal view returns (uint256) {
@@ -187,8 +184,8 @@ contract GSTLend is Ownable, ReentrancyGuard {
             interestRate = (slope1 * kink) / 1e18 + (slope2 * excessUtilization) / 1e18 + base;
         }
 
-        if (interestRate > gmdPool.APR) {
-            interestRate = gmdPool.APR;
+        if (interestRate > GMDVault.poolInfo(poolId).APR) {
+            interestRate = GMDVault.poolInfo(poolId).APR;
         }
 
         return interestRate;
@@ -211,15 +208,18 @@ contract GSTLend is Ownable, ReentrancyGuard {
         return (gmdDeposits[_user]*usdPerGmdUSDC())/1e18;
     }
 
+    function updateMaxRate(uint256 _maxRate) external onlyOwner {
+        maxRate = _maxRate;
+    }
+    function setGmdDepositCap(uint256 _gmdDepositCap) external onlyOwner {
+        gmdDepositCap = _gmdDepositCap;
+    }
+
     function updateInterestRates(uint256 _base, uint256 _slope1, uint256 _kink, uint256 _slope2) external onlyOwner {
         base = _base;
         slope1 = _slope1;
         kink = _kink;
         slope2 = _slope2;
-    }
-
-    function setGmdDepositCap(uint256 _newGmdDepositCap) external onlyOwner {
-        gmdDepositCap = _newGmdDepositCap;
     }
 
     function changeFees(uint256 _fees, address _treasury) external onlyOwner {
@@ -231,6 +231,12 @@ contract GSTLend is Ownable, ReentrancyGuard {
     function changeEsRatio(uint256 _esRatio) external onlyOwner {
         require(_esRatio <= 10**4, "out of range");
         esRatio = _esRatio;
+    }
+
+    function governanceRecoverUnsupported(IERC20 _token, uint256 amount, address to) external onlyOwner {
+        require(_token != USDC);
+        require(_token != gmdUSDC);
+        _token.transfer(to, amount);
     }
 
     // modified synthetix staking:
@@ -264,7 +270,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
 
     function earned(address _account) public view returns (uint) {
         return
-            ((balanceOf[_account] *
+            ((xdeposits[_account] *
                 (rewardPerToken() - userRewardPerTokenPaid[_account])) / 1e18) +
             rewards[_account];
     }
