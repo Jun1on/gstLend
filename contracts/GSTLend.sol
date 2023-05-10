@@ -188,7 +188,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
 
         uint256 vaultAPR = GMDVault.poolInfo(poolId).APR*1e14;
         if (APR > vaultAPR) {
-            //return vaultAPR;
+            return vaultAPR;
         }
 
         return APR;
