@@ -93,6 +93,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
     }
 
     function deposit(uint256 _amount) external nonReentrant updateReward(msg.sender) {
+        update();
         USDC.transferFrom(msg.sender, address(this), _amount);
         uint256 xamount = _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC();
         xdeposits[msg.sender] += xamount;
@@ -102,6 +103,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
     }
 
     function withdraw(uint256 _amount) external nonReentrant updateReward(msg.sender) {
+        update();
         require(xdeposits[msg.sender] >= _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC(), "GSTLend: Insufficient balance");
         uint256 xamount = _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC();
         xdeposits[msg.sender] -= xamount;
