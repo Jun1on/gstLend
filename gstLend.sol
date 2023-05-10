@@ -15,11 +15,11 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 interface IGMDVault {
     struct PoolInfo {
-        IERC20 lpToken;    
-        IERC20 GDlptoken; 
+        IERC20 lpToken;
+        IERC20 GDlptoken;
         uint256 EarnRateSec;     
-        uint256 totalStaked; 
-        uint256 lastUpdate; 
+        uint256 totalStaked;
+        uint256 lastUpdate;
         uint256 vaultcap;
         uint256 glpFees;
         uint256 APR;
@@ -31,11 +31,11 @@ interface IGMDVault {
 }
 
 contract GSTLend is Ownable, ReentrancyGuard {
-    IGMDVault public GMDVault;
+    IGMDVault public GMDVault = IGMDVault(0x8080B5cE6dfb49a6B86370d6982B3e2A86FBBb08);
     uint256 public poolId;
     IERC20 public gmdUSDC;
     IERC20 public USDC;
-    uint256 private immutable decimalDiff;
+    uint256 private decimalDiff;
 
     uint256 public totalDeposits;
     uint256 public totalxDeposits;
@@ -84,9 +84,8 @@ contract GSTLend is Ownable, ReentrancyGuard {
     // User address => rewards to be claimed
     mapping(address => uint) public rewards;
 
-    // Initialize the lending pool with the gmd vaults
-    constructor(address _GMDVault, uint256 _poolId) {
-        GMDVault = IGMDVault(_GMDVault);
+    // Initialize the lending pool with the poolId corresponding to the GMD vault
+    function initialize(uint256 _poolId) external onlyOwner {
         poolId = _poolId;
         gmdUSDC = GMDVault.poolInfo(poolId).GDlptoken;
         USDC = GMDVault.poolInfo(poolId).lpToken;
