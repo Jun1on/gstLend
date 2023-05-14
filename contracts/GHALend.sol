@@ -30,7 +30,7 @@ interface IGMDVault {
     function poolInfo(uint256 _pid) external view returns (PoolInfo memory);
 }
 
-contract GSTLend is Ownable, ReentrancyGuard {
+contract GHALend is Ownable, ReentrancyGuard {
     IGMDVault public GMDVault = IGMDVault(0x8080B5cE6dfb49a6B86370d6982B3e2A86FBBb08);
     uint256 public poolId;
     IERC20 public gmdUSDC;
@@ -49,13 +49,13 @@ contract GSTLend is Ownable, ReentrancyGuard {
 
     // security caps
     uint256 public gmdDepositCap = 500000 * 1e18;
-    uint256 public maxRate = 11 * 1e17;
+    uint256 public maxRate = 1.1 * 1e18;
 
     uint256 LTV = 8000;
-    uint256 public base   = 1e16 * 2;    // 2%
-    uint256 public slope1 = 1e16 * 1/10; // 0.1%
-    uint256 public kink   = 1e16 * 80;   // 80%
-    uint256 public slope2 = 1e16 * 1;    // 1%
+    uint256 public base   = 2 * 1e16;    // 2%
+    uint256 public slope1 = 0.1 * 1e16;  // 0.1%
+    uint256 public kink   = 80 * 1e16;   // 80%
+    uint256 public slope2 = 1 * 1e16;    // 1%
 
     uint256 public earnRateSec;
     uint256 public lastUpdate;
@@ -63,11 +63,11 @@ contract GSTLend is Ownable, ReentrancyGuard {
     uint256 fees = 2500;
     address public treasury = 0x03851F30cC29d86EE87a492f037B16642838a357;
 
-    // Ratio to be paid out in esGST
+    // Ratio to be paid out in esGHA
     uint256 esRatio = 8000;
 
-    IERC20 public GST = IERC20(0x0000000000000000000000000000000000000000);
-    IERC20 public esGST = IERC20(0x0000000000000000000000000000000000000000);
+    IERC20 public GHA = IERC20(0xeCA66820ed807c096e1Bd7a1A091cD3D3152cC79);
+    IERC20 public esGHA = IERC20(0x3129F42a1b574715921cb65FAbB0F0f9bd8b4f39);
 
     // Duration of rewards to be paid out (in seconds)
     uint public duration;
@@ -104,7 +104,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
 
     function withdraw(uint256 _amount) external nonReentrant updateReward(msg.sender) {
         update();
-        require(xdeposits[msg.sender] >= _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC(), "GSTLend: Insufficient balance");
+        require(xdeposits[msg.sender] >= _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC(), "GHALend: Insufficient balance");
         uint256 xamount = _amount * (10**decimalDiff) * 1e18/usdPerDepositedUSDC();
         xdeposits[msg.sender] -= xamount;
         totalDeposits -= _amount * (10**decimalDiff);
@@ -115,7 +115,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
 
     function depositGmd(uint256 _amount) external nonReentrant {
         gmdUSDC.transferFrom(msg.sender, address(this), _amount);
-        require(_amount + totalGmdDeposits < gmdDepositCap, "GSTLend: Deposit exceeds cap");
+        require(_amount + totalGmdDeposits < gmdDepositCap, "GHALend: Deposit exceeds cap");
         gmdDeposits[msg.sender] += _amount;
         totalGmdDeposits += _amount;
     }
@@ -123,7 +123,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
         update();
         uint256 freeUSD = valueOfDeposits(msg.sender) - xborrows[msg.sender] * (usdPerBorrowedUSDC()/1e18) / LTV*(10**4);
         uint256 freeCollateral = freeUSD * 1e18/usdPerGmdUSDC();
-        require(freeCollateral >= _amount, "GSTLend: Insufficient collateral");
+        require(freeCollateral >= _amount, "GHALend: Insufficient collateral");
         gmdDeposits[msg.sender] -= _amount;
         totalGmdDeposits -= _amount;
         gmdUSDC.transfer(msg.sender, _amount);
@@ -133,7 +133,7 @@ contract GSTLend is Ownable, ReentrancyGuard {
         update();
         uint256 totalBorrowable = valueOfDeposits(msg.sender)*LTV/(10**4);
         uint256 borrowable = totalBorrowable - xborrows[msg.sender]*(usdPerBorrowedUSDC()/1e18);
-        require(_amount * (10**decimalDiff) <= borrowable, "GSTLend: Insufficient collateral");
+        require(_amount * (10**decimalDiff) <= borrowable, "GHALend: Insufficient collateral");
         uint256 xamount = _amount * (10**decimalDiff) * 1e18/usdPerBorrowedUSDC();
         xborrows[msg.sender] += xamount;
         totalBorrows += _amount * (10**decimalDiff);
@@ -282,8 +282,8 @@ contract GSTLend is Ownable, ReentrancyGuard {
     function getReward() external updateReward(msg.sender) {
         uint reward = rewards[msg.sender];
         rewards[msg.sender] = 0;
-        GST.transfer(msg.sender, reward * esRatio / 10**4);
-        esGST.transfer(msg.sender, reward * (10**4 - esRatio) / 10**4);
+        GHA.transfer(msg.sender, reward * esRatio / 10**4);
+        esGHA.transfer(msg.sender, reward * (10**4 - esRatio) / 10**4);
     }
 
     function setRewardsDuration(uint _duration) external onlyOwner {
@@ -303,11 +303,11 @@ contract GSTLend is Ownable, ReentrancyGuard {
 
         require(rewardRate > 0, "reward rate = 0");
         require(
-            rewardRate * duration * esRatio / 10**4 <= esGST.balanceOf(address(this)),
+            rewardRate * duration * esRatio / 10**4 <= esGHA.balanceOf(address(this)),
             "escrowed reward amount > balance"
         );
         require(
-            rewardRate * duration * (10**4 - esRatio) / 10**4 <= GST.balanceOf(address(this)),
+            rewardRate * duration * (10**4 - esRatio) / 10**4 <= GHA.balanceOf(address(this)),
             "reward amount > balance"
         );
 
