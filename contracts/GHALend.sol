@@ -37,11 +37,11 @@ contract GHALend is Ownable, ReentrancyGuard {
     IERC20 public USDC;
     uint256 private decimalDiff;
 
-    uint256 public totalDeposits    = 1;
-    uint256 public totalxDeposits   = 1;
-    uint256 public totalBorrows     = 1;
-    uint256 public totalxBorrows    = 1;
-    uint256 public totalGmdDeposits = 1;
+    uint256 public totalDeposits;
+    uint256 public totalxDeposits;
+    uint256 public totalBorrows;
+    uint256 public totalxBorrows;
+    uint256 public totalGmdDeposits;
 
     mapping(address => uint256) public xdeposits;
     mapping(address => uint256) public xborrows;
@@ -69,8 +69,6 @@ contract GHALend is Ownable, ReentrancyGuard {
     IERC20 public GHA = IERC20(0xeCA66820ed807c096e1Bd7a1A091cD3D3152cC79);
     IERC20 public esGHA = IERC20(0x3129F42a1b574715921cb65FAbB0F0f9bd8b4f39);
 
-    // Duration of rewards to be paid out (in seconds)
-    uint public duration;
     // Timestamp of when the rewards finish
     uint public finishAt;
     // Minimum of last updated time and reward finish time
@@ -120,7 +118,13 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
     function withdrawGmd(uint256 _amount) external nonReentrant {
         accureInterest();
-        uint256 freeUSD = valueOfDeposits(msg.sender) - xborrows[msg.sender] * (usdPerBorrowedUSDC()/1e18) / LTV*(10**4);
+        uint256 freeUSD;
+        if (LTV == 0){
+            require(xborrows[msg.sender] == 0, "GHALend: Insufficient collateral");
+            freeUSD = valueOfDeposits(msg.sender);
+        } else {
+            freeUSD = valueOfDeposits(msg.sender) - xborrows[msg.sender] * (usdPerBorrowedUSDC()/1e18) / LTV*(10**4);
+        }
         uint256 freeCollateral = freeUSD * 1e18/usdPerGmdUSDC();
         require(freeCollateral >= _amount, "GHALend: Insufficient collateral");
         gmdDeposits[msg.sender] -= _amount;
@@ -169,14 +173,23 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function usdPerDepositedUSDC() internal view returns (uint256) {
+        if (totalxDeposits == 0) {
+            return totalDeposits + 1;
+        }
         return totalDeposits * 1e18 / totalxDeposits;
     }
 
     function usdPerBorrowedUSDC() internal view returns (uint256) {
+        if (totalxBorrows == 0) {
+            return totalBorrows + 1;
+        }
         return totalBorrows * 1e18 / totalxBorrows;
     }
 
     function borrowAPR() public view returns (uint256) {
+        if (totalDeposits == 0) {
+            return 0;
+        }
         uint256 utilizationRatio = totalBorrows*1e18/totalDeposits;
         uint256 APR;
 
@@ -193,7 +206,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         if (LTV == 0) {
             return APR;
         }
-        return _min(APR,vaultAPR*(10**4)/LTV);
+        return _min(APR, vaultAPR*(10**4) / LTV);
     }
 
     // adds accrued interest
@@ -234,9 +247,9 @@ contract GHALend is Ownable, ReentrancyGuard {
         slope2 = _slope2;
     }
 
-    function changeFees(uint256 _fees, address _treasury) external onlyOwner {
-        require(_fees <= 10**4, "out of range");
-        fees = _fees;
+    function changeFees(uint256 _feeRate, address _treasury) external onlyOwner {
+        require(_feeRate <= 10**4, "out of range");
+        feeRate = _feeRate;
         treasury = _treasury;
     }
 
@@ -247,8 +260,8 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     // it is extremely rare for someone to approach a low health factor. in an emergency, owner can liquidate
     function governanceEmergencyLiquidate(address _user) external onlyOwner {
-        gmdDeposits[owner] += gmdDeposits[_user];
-        xborrows[owner] += xborrows[_user];
+        gmdDeposits[owner()] += gmdDeposits[_user];
+        xborrows[owner()] += xborrows[_user];
         gmdDeposits[_user] = 0;
         xborrows[_user] = 0;
     }
@@ -298,8 +311,8 @@ contract GHALend is Ownable, ReentrancyGuard {
     function getReward() external updateReward(msg.sender) {
         uint reward = rewards[msg.sender];
         rewards[msg.sender] = 0;
-        GHA.transfer(msg.sender, reward * esRatio / 10**4);
-        esGHA.transfer(msg.sender, reward * (10**4 - esRatio) / 10**4);
+        esGHA.transfer(msg.sender, reward * esRatio / 10**4);
+        GHA.transfer(msg.sender, reward * (10**4 - esRatio) / 10**4);
     }
 
     function setRewards(uint256 _rewardRate, uint256 _finishAt) external onlyOwner {
@@ -307,11 +320,11 @@ contract GHALend is Ownable, ReentrancyGuard {
         finishAt = _finishAt;
         uint256 duration = finishAt - block.timestamp;
         require(
-            rewardRate * duration * esRatio / 10**4 <= esGST.balanceOf(address(this)),
+            rewardRate * duration * esRatio / 10**4 <= esGHA.balanceOf(address(this)),
             "escrowed reward amount > balance"
         );
         require(
-            rewardRate * duration * (10**4 - esRatio) / 10**4 <= GST.balanceOf(address(this)),
+            rewardRate * duration * (10**4 - esRatio) / 10**4 <= GHA.balanceOf(address(this)),
             "reward amount > balance"
         );
     }
