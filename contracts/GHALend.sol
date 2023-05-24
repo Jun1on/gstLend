@@ -63,7 +63,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     uint256 public lastUpdate;
 
     uint256 feeRate = 2500;
-    address public treasury = 0x03851F30cC29d86EE87a492f037B16642838a357;
+    address public treasury = 0x52D16E8550785F3F1073632bC54dAa2e07e60C1c;
 
     // Ratio to be paid out in esGHA
     uint256 esRatio = 8000;
@@ -105,13 +105,23 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     function withdraw(uint256 _amount) external nonReentrant updateReward(msg.sender) {
         accureInterest();
-        uint256 xamount = _amount * decimalAdj * 1e18/usdPerxDeposit();
-        xdeposits[msg.sender] -= xamount;
-        totalDeposits -= _amount * decimalAdj;
+        uint256 deposits = xdeposits[msg.sender] * usdPerxDeposit()/1e18;
+        uint256 xamount;
+        if (_amount * decimalAdj > deposits) {
+            // withdraw all
+            xamount = xdeposits[msg.sender];
+            xdeposits[msg.sender] -= xamount;
+            totalDeposits -= deposits;
+            USDC.transfer(msg.sender, deposits / decimalAdj);
+        } else {
+            xamount = _amount * decimalAdj * 1e18/usdPerxDeposit();
+            xdeposits[msg.sender] -= xamount;
+            totalDeposits -=_amount * decimalAdj;
+            USDC.transfer(msg.sender, _amount);
+        }
         totalxDeposits -= xamount;
         USDC.transfer(msg.sender, _amount);
-        if (totalxDeposits == 0) {
-            // transfer dust
+        if (totalxDeposits == 0) { // transfer dust
             USDC.transfer(treasury, USDC.balanceOf(address(this)));
         }
         updateAPR();
@@ -161,14 +171,13 @@ contract GHALend is Ownable, ReentrancyGuard {
             // repay all
             xamount = xborrows[msg.sender];
             USDC.transferFrom(msg.sender, address(this), borrows / decimalAdj);
-            xborrows[msg.sender] -= xamount;
             totalBorrows -= borrows;
         } else {
             xamount = _amount * decimalAdj * 1e18/usdPerxBorrow();
             USDC.transferFrom(msg.sender, address(this), _amount);
-            xborrows[msg.sender] -= xamount;
             totalBorrows -= _amount * decimalAdj;
         }
+        xborrows[msg.sender] -= xamount;
         totalxBorrows -= xamount;
         updateAPR();
     }
