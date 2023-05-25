@@ -333,7 +333,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         GHA.transfer(msg.sender, reward * (MAX_BPS - esRatio) / MAX_BPS);
     }
 
-    function setRewards(uint256 _rewardRate, uint256 _finishAt) external onlyOwner {
+    function setRewards(uint256 _rewardRate, uint256 _finishAt) external onlyOwner updateReward(address(0)) {
         rewardRate = _rewardRate;
         finishAt = _finishAt;
         uint256 duration = finishAt - block.timestamp;
