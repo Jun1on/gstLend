@@ -53,7 +53,9 @@ contract GHALend is Ownable, ReentrancyGuard {
     uint256 public maxRate = 1.1 * 1e18;
 
     uint256 constant MAX_BPS    = 1e4;
-    uint256 public LTV    = 0.8 * 1e4;   // 80% LTV
+    uint256 public LTV          = 0.8 * 1e4;   // 80% LTV
+    uint256 public liqThreshold = 0.99 * 1e4;  // 99%
+
     uint256 public base   = 2 * 1e16;    // 2%
     uint256 public slope1 = 0.1 * 1e16;  // 0.1%
     uint256 public kink   = 80 * 1e16;   // 80%
@@ -93,10 +95,11 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function deposit(uint256 _amount) external nonReentrant updateReward(msg.sender) {
-        accureInterest();
+        accrueInterest();
         USDC.transferFrom(msg.sender, address(this), _amount);
         require(_amount + totalDeposits <= depositCap, "GHALend: Deposit exceeds cap");
         uint256 xamount = _amount * decimalAdj * 1e18/usdPerxDeposit();
+        require(xamount != 0);
         xdeposits[msg.sender] += xamount;
         totalDeposits += _amount * decimalAdj;
         totalxDeposits += xamount;
@@ -104,7 +107,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function withdraw(uint256 _amount) external nonReentrant updateReward(msg.sender) {
-        accureInterest();
+        accrueInterest();
         uint256 deposits = xdeposits[msg.sender] * usdPerxDeposit()/1e18;
         uint256 xamount;
         if (_amount * decimalAdj > deposits) {
@@ -114,13 +117,12 @@ contract GHALend is Ownable, ReentrancyGuard {
             totalDeposits -= deposits;
             USDC.transfer(msg.sender, deposits / decimalAdj);
         } else {
-            xamount = _amount * decimalAdj * 1e18/usdPerxDeposit();
+            xamount = _amount * decimalAdj * 1e18/usdPerxDeposit() + 1;
             xdeposits[msg.sender] -= xamount;
             totalDeposits -=_amount * decimalAdj;
             USDC.transfer(msg.sender, _amount);
         }
         totalxDeposits -= xamount;
-        USDC.transfer(msg.sender, _amount);
         if (totalxDeposits == 0) { // transfer dust
             USDC.transfer(treasury, USDC.balanceOf(address(this)));
         }
@@ -134,7 +136,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         totalGmdDeposits += _amount;
     }
     function withdrawGmd(uint256 _amount) external nonReentrant {
-        accureInterest();
+        accrueInterest();
         uint256 freeUSD;
         if (LTV == 0){
             require(xborrows[msg.sender] == 0, "GHALend: Insufficient collateral");
@@ -151,21 +153,23 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function borrow(uint256 _amount) external nonReentrant {
-        accureInterest();
+        accrueInterest();
         uint256 totalBorrowable = valueOfDeposits(msg.sender) * LTV/MAX_BPS;
         uint256 borrowable = totalBorrowable - xborrows[msg.sender] * usdPerxBorrow()/1e18;
         require(_amount * decimalAdj <= borrowable, "GHALend: Insufficient collateral");
         uint256 xamount = _amount * decimalAdj * 1e18/usdPerxBorrow();
+        require(xamount != 0);
         xborrows[msg.sender] += xamount;
         totalBorrows += _amount * decimalAdj;
         totalxBorrows += xamount;
         USDC.transfer(msg.sender, _amount);
+        require(totalBorrows <= totalDeposits);
         updateAPR();
     }
 
     function repay(uint256 _amount) external nonReentrant {
-        accureInterest();
-        uint256 borrows = xborrows[msg.sender] * usdPerxBorrow()/1e18;
+        accrueInterest();
+        uint256 borrows = xborrows[msg.sender] * usdPerxBorrow()/1e18 + 1;
         uint256 xamount;
         if (_amount * decimalAdj > borrows) {
             // repay all
@@ -227,7 +231,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     // adds accrued interest
-    function accureInterest() internal {
+    function accrueInterest() internal {
         uint256 reward = pendingInterest();
         lastUpdate = block.timestamp;
         uint256 fees = reward * feeRate / MAX_BPS;
@@ -256,6 +260,14 @@ contract GHALend is Ownable, ReentrancyGuard {
     function setDepositCaps(uint256 _depositCap, uint256 _gmdDepositCap) external onlyOwner {
         depositCap = _depositCap;
         gmdDepositCap = _gmdDepositCap;
+    }
+
+    function updateLTVs(uint256 _LTV, uint256 _liqThreshold) external onlyOwner {
+        require(_LTV <= MAX_BPS, "out of range");
+        require(liqThreshold <= MAX_BPS, "out of range");
+        require(liqThreshold > 0.9 * 1e4, "too low");
+        LTV = _LTV;
+        liqThreshold = _liqThreshold;
     }
 
     function updateInterestRateCurve(uint256 _base, uint256 _slope1, uint256 _kink, uint256 _slope2) external onlyOwner {
@@ -345,6 +357,7 @@ contract GHALend is Ownable, ReentrancyGuard {
             rewardRate * duration * (MAX_BPS - esRatio) / MAX_BPS <= GHA.balanceOf(address(this)),
             "reward amount > balance"
         );
+        updatedAt = block.timestamp;
     }
 
     function _min(uint x, uint y) private pure returns (uint) {
