@@ -28,13 +28,14 @@ interface IGMDVault {
         bool rewardStart;
     }
     function poolInfo(uint256 _pid) external view returns (PoolInfo memory);
+    function GDpriceToStakedtoken(uint256 _pid) external view returns(uint256);
 }
 
 contract GHALend is Ownable, ReentrancyGuard {
-    IGMDVault public GMDVault = IGMDVault(0x8080B5cE6dfb49a6B86370d6982B3e2A86FBBb08);
-    uint256 public poolId;
-    IERC20 public gmdUSDC;
-    IERC20 public USDC;
+    IGMDVault public constant GMDVault = IGMDVault(0x8080B5cE6dfb49a6B86370d6982B3e2A86FBBb08);
+    uint256 public immutable poolId;
+    IERC20 public immutable gmdUSDC;
+    IERC20 public immutable USDC;
     uint256 private decimalAdj;
 
     uint256 public totalDeposits;
@@ -48,9 +49,10 @@ contract GHALend is Ownable, ReentrancyGuard {
     mapping(address => uint256) public gmdDeposits;
 
     // security caps
+    uint256 public maxRate = 1.1 * 1e18;
     uint256 public depositCap    = 20000 * 1e18;
     uint256 public gmdDepositCap = 10000 * 1e18;
-    uint256 public maxRate = 1.1 * 1e18;
+    uint256 public borrowCap     = 10000 * 1e18;
 
     uint256 constant MAX_BPS    = 1e4;
     uint256 public LTV          = 0.8 * 1e4;   // 80% LTV
@@ -105,7 +107,7 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     function deposit(uint256 _amount) external nonReentrant updateReward(msg.sender) {
         accrueInterest();
-        require(_amount + totalDeposits <= depositCap, "GHALend: Deposit exceeds cap");
+        require(_amount * decimalAdj + totalDeposits <= depositCap, "GHALend: Deposit exceeds cap");
         uint256 xamount = _amount * decimalAdj * 1e18/usdPerxDeposit();
         require(xamount != 0);
         USDC.transferFrom(msg.sender, address(this), _amount);
@@ -168,6 +170,7 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     function borrow(uint256 _amount) external nonReentrant {
         accrueInterest();
+        require(_amount * decimalAdj + totalBorrows <= borrowCap, "GHALend: Borrow exceeds cap");
         uint256 totalBorrowable = valueOfDeposits(msg.sender) * LTV/MAX_BPS;
         uint256 borrowable = totalBorrowable - xborrows[msg.sender] * usdPerxBorrow()/1e18;
         require(_amount * decimalAdj <= borrowable, "GHALend: Insufficient collateral");
@@ -177,7 +180,6 @@ contract GHALend is Ownable, ReentrancyGuard {
         totalBorrows += _amount * decimalAdj;
         totalxBorrows += xamount;
         USDC.transfer(msg.sender, _amount);
-        require(totalBorrows <= totalDeposits);
         updateAPR();
         emit Borrow(msg.sender, _amount);
     }
@@ -205,9 +207,7 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     // returns how much one gmdUSDC is worth
     function usdPerGmdUSDC() public view returns (uint256) {
-        uint256 totalShares = gmdUSDC.totalSupply();
-        uint256 calculatedRate = GMDVault.poolInfo(poolId).totalStaked * 1e18 / totalShares;
-        return _min(calculatedRate, maxRate);
+        return _min(GMDVault.GDpriceToStakedtoken(poolId), maxRate);
     }
 
     function usdPerxDeposit() internal view returns (uint256) {
@@ -268,15 +268,20 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     // returns value of a user's collateral in usd
     function valueOfDeposits(address _user) internal view returns (uint256) {
-        return (gmdDeposits[_user]*usdPerGmdUSDC())/1e18;
+        return gmdDeposits[_user] * usdPerGmdUSDC()/1e18;
+    }
+
+    function HF(address _user) public view returns (uint256) {
+        return valueOfDeposits(_user) / xborrows[_user] * usdPerxBorrow() * LTV/MAX_BPS;
     }
 
     function updateMaxRate(uint256 _maxRate) external onlyOwner {
         maxRate = _maxRate;
     }
-    function setDepositCaps(uint256 _depositCap, uint256 _gmdDepositCap) external onlyOwner {
+    function setCaps(uint256 _depositCap, uint256 _gmdDepositCap, uint256 _borrowCap) external onlyOwner {
         depositCap = _depositCap;
         gmdDepositCap = _gmdDepositCap;
+        borrowCap = _borrowCap;
     }
 
     function updateLTVs(uint256 _LTV, uint256 _liqThreshold) external onlyOwner {
@@ -294,6 +299,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         slope2 = _slope2;
     }
 
+    // treasury can be set to 0 address to pause all lending
     function changeFees(uint256 _feeRate, address _treasury) external onlyOwner {
         require(_feeRate <= MAX_BPS, "out of range");
         require(_treasury != address(0));
