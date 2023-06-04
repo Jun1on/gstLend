@@ -29,11 +29,12 @@ interface IGMDVault {
     }
     function poolInfo(uint256 _pid) external view returns (PoolInfo memory);
     function GDpriceToStakedtoken(uint256 _pid) external view returns(uint256);
+    function leave(uint256 _share, uint256 _pid) public  nonReentrant returns(uint256);
 }
 
 contract GHALend is Ownable, ReentrancyGuard {
     IGMDVault public constant GMDVault = IGMDVault(0x8080B5cE6dfb49a6B86370d6982B3e2A86FBBb08);
-    uint256 public immutable poolId;
+    uint256 public immutable pid;
     IERC20 public immutable gmdUSDC;
     IERC20 public immutable USDC;
     uint256 private decimalAdj;
@@ -94,14 +95,15 @@ contract GHALend is Ownable, ReentrancyGuard {
     event WithdrawGmd(address indexed user, uint256 amount);
     event Borrow(address indexed user, uint256 amount);
     event Repay(address indexed user, uint256 amount);
+    event Redeem(address indexed user, address indexed executor, uint256 amount);
     event GetReward(address indexed user, uint256 amount);
 
 
-    // Initialize the lending pool with the poolId corresponding to the GMD vault
-    constructor(uint256 _poolId) {
-        poolId = _poolId;
-        gmdUSDC = GMDVault.poolInfo(poolId).GDlptoken;
-        USDC = GMDVault.poolInfo(poolId).lpToken;
+    // Initialize the lending pool with the pool id corresponding to the GMD vault
+    constructor(uint256 _pid) {
+        pid = _pid;
+        gmdUSDC = GMDVault.poolInfo(pid).GDlptoken;
+        USDC = GMDVault.poolInfo(pid).lpToken;
         decimalAdj = 10 ** (18 - USDC.decimals()); // decimal handling
     }
 
@@ -207,7 +209,7 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     // returns how much one gmdUSDC is worth
     function usdPerGmdUSDC() public view returns (uint256) {
-        return _min(GMDVault.GDpriceToStakedtoken(poolId), maxRate);
+        return _min(GMDVault.GDpriceToStakedtoken(pid), maxRate);
     }
 
     function usdPerxDeposit() internal view returns (uint256) {
@@ -238,7 +240,7 @@ contract GHALend is Ownable, ReentrancyGuard {
             APR = (slope1 * kink*100) / 1e18 + (slope2 * excessUtilization*100) / 1e18 + base;
         }
 
-        uint256 vaultAPR = GMDVault.poolInfo(poolId).APR*1e14;
+        uint256 vaultAPR = GMDVault.poolInfo(pid).APR*1e14;
 
         // APR cap
         if (LTV == 0) {
@@ -275,8 +277,34 @@ contract GHALend is Ownable, ReentrancyGuard {
         return xborrows[_user] * usdPerxBorrow() * MAX_BPS / valueOfDeposits(_user);
     }
 
-    function declareLiquidationIntent(address _user) external {
+    // automatically redeem half of a users deposits through GMD's vault and repay debt
+    function redeemAuto(address _user) external nonReentrant {
         require(userLTV(_user) > liqThreshold, "GHALend: user not over thresh");
+        uint256 gmdAmount = gmdDeposits[_user] / 2;
+        uint256 amount = GMDVault.leave(gmdAmount, pid);
+        _redeem(_user, address(this), amount);
+        // redundant checks:
+        // amount we repaid >= our cost
+        require(amount * decimalAdj * 1e18/usdPerGmdUSDC() >= gmdAmount);
+        require(userLTV(_user) > MAX_BPS - (MAX_BPS - liqThreshold) * 2, "GHALend: too much redemption");
+    }
+
+    // redeem USDC -> gmdUSDC at redemption price with no deposit fee
+    function redeem(address _user, uint256 _amount) external nonReentrant {
+        require(userLTV(_user) > liqThreshold, "GHALend: user not over thresh");
+        _redeem(_user, msg.sender, _amount);
+        require(userLTV(_user) > MAX_BPS - (MAX_BPS - liqThreshold) * 2, "GHALend: too much redemption");
+    }
+
+    function _redeem(address _user, address _executor, uint256 _amount) internal {
+        uint256 gmdAmount = _amount * decimalAdj * 1e18/usdPerGmdUSDC();
+        if (_executor != address(this)) {
+            USDC.transferFrom(_executor, address(this), _amount);
+            gmdUSDC.transfer(_executor, gmdAmount);
+        }
+        borrows[_user] -= _amount;
+        gmdDeposits[_user] -= gmdAmount;
+        emit Redeem(_user, _executor, _amount);
     }
 
     function updateMaxRate(uint256 _maxRate) external onlyOwner {
@@ -291,7 +319,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     function updateLTVs(uint256 _LTV, uint256 _liqThreshold) external onlyOwner {
         require(_LTV <= MAX_BPS, "out of range");
         require(liqThreshold <= MAX_BPS, "out of range");
-        require(liqThreshold > 0.9 * 1e4, "too low");
+        require(liqThreshold > _LTV, "too low");
         LTV = _LTV;
         liqThreshold = _liqThreshold;
     }
