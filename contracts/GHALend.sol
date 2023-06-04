@@ -214,14 +214,14 @@ contract GHALend is Ownable, ReentrancyGuard {
         if (totalxDeposits == 0) {
             return 1e18;
         }
-        return totalDeposits * 1e18 / totalxDeposits;
+        return (totalDeposits + pendingInterest() * (MAX_BPS - feeRate) / MAX_BPS) * 1e18 / totalxDeposits;
     }
 
     function usdPerxBorrow() internal view returns (uint256) {
         if (totalxBorrows == 0) {
             return 1e18;
         }
-        return totalBorrows * 1e18 / totalxBorrows;
+        return (totalBorrows + pendingInterest()) * 1e18 / totalxBorrows;
     }
 
     function borrowAPR() public view returns (uint256) {
@@ -271,8 +271,12 @@ contract GHALend is Ownable, ReentrancyGuard {
         return gmdDeposits[_user] * usdPerGmdUSDC()/1e18;
     }
 
-    function HF(address _user) public view returns (uint256) {
-        return valueOfDeposits(_user) / xborrows[_user] * usdPerxBorrow() * LTV/MAX_BPS;
+    function userLTV(address _user) public view returns (uint256) {
+        return xborrows[_user] * usdPerxBorrow() * MAX_BPS / valueOfDeposits(_user);
+    }
+
+    function declareLiquidationIntent(address _user) external {
+        require(userLTV(_user) > liqThreshold, "GHALend: user not over thresh");
     }
 
     function updateMaxRate(uint256 _maxRate) external onlyOwner {
@@ -307,17 +311,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         treasury = _treasury;
     }
 
-    // it is extremely rare for someone to approach a low health factor. in an emergency, owner can liquidate
-    function governanceEmergencyLiquidate(address _user) external onlyOwner {
-        gmdDeposits[owner()] += gmdDeposits[_user];
-        xborrows[owner()] += xborrows[_user];
-        gmdDeposits[_user] = 0;
-        xborrows[_user] = 0;
-    }
-
-    function governanceRecoverUnsupported(IERC20 _token, address to, uint256 amount) external onlyOwner {
-        require(_token != USDC);
-        require(_token != gmdUSDC);
+    function yoink(IERC20 _token, address to, uint256 amount) external onlyOwner {
         _token.transfer(to, amount);
     }
 
@@ -386,21 +380,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         return x <= y ? x : y;
     }
 
-    // ui helpers
-    function pendingUsdPerxDeposit() external view returns (uint256) {
-        if (totalxDeposits == 0) {
-            return 1e18;
-        }
-        return (pendingInterest() + totalDeposits) * 1e18 / totalxDeposits;
-    }
-
-    function pendingUsdPerxBorrow() external view returns (uint256) {
-        if (totalxBorrows == 0) {
-            return 1e18;
-        }
-        return (pendingInterest() + totalBorrows) * 1e18 / totalxBorrows;
-    }
-
+    // ui helper
     function depositAPR() external view returns (uint256) {
         return borrowAPR() * totalBorrows / totalDeposits * (MAX_BPS - feeRate) / MAX_BPS;
     }
