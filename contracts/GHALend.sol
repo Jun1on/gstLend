@@ -29,7 +29,7 @@ interface IGMDVault {
     }
     function poolInfo(uint256 _pid) external view returns (PoolInfo memory);
     function GDpriceToStakedtoken(uint256 _pid) external view returns(uint256);
-    function leave(uint256 _share, uint256 _pid) public  nonReentrant returns(uint256);
+    function leave(uint256 _share, uint256 _pid) external returns(uint256);
 }
 
 contract GHALend is Ownable, ReentrancyGuard {
@@ -50,14 +50,14 @@ contract GHALend is Ownable, ReentrancyGuard {
     mapping(address => uint256) public gmdDeposits;
 
     // security caps
-    uint256 public maxRate = 1.1 * 1e18;
+    uint256 public maxRate = 999 * 1e18; // change before deployment
     uint256 public depositCap    = 20000 * 1e18;
     uint256 public gmdDepositCap = 10000 * 1e18;
     uint256 public borrowCap     = 10000 * 1e18;
 
-    uint256 constant MAX_BPS    = 1e4;
-    uint256 public LTV          = 0.8 * 1e4;   // 80% LTV
-    uint256 public liqThreshold = 0.99 * 1e4;  // 99%
+    uint256 constant MAX_BPS = 1e4;
+    uint256 public LTV       = 0.8 * 1e4;   // can borrow up to 80% LTV
+    uint256 public redLTV    = 0.9 * 1e4;  // can be redeemed against past 90% LTV
 
     uint256 public base   = 2 * 1e16;    // 2%
     uint256 public slope1 = 0.1 * 1e16;  // 0.1%
@@ -68,7 +68,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     uint256 public lastUpdate;
 
     uint256 feeRate = 2500;
-    address public treasury = 0x52D16E8550785F3F1073632bC54dAa2e07e60C1c;
+    address public treasury = 0x03851F30cC29d86EE87a492f037B16642838a357;
 
     // Ratio to be paid out in esGHA
     uint256 esRatio = 8000;
@@ -188,7 +188,7 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     function repay(uint256 _amount) external nonReentrant {
         accrueInterest();
-        uint256 borrows = xborrows[msg.sender] * usdPerxBorrow()/1e18 + 1;
+        uint256 borrows = xborrows[msg.sender]* usdPerxBorrow()/1e18 + 1;
         uint256 xamount;
         if (_amount * decimalAdj > borrows) {
             // repay all
@@ -212,14 +212,14 @@ contract GHALend is Ownable, ReentrancyGuard {
         return _min(GMDVault.GDpriceToStakedtoken(pid), maxRate);
     }
 
-    function usdPerxDeposit() internal view returns (uint256) {
+    function usdPerxDeposit() public view returns (uint256) {
         if (totalxDeposits == 0) {
             return 1e18;
         }
         return (totalDeposits + pendingInterest() * (MAX_BPS - feeRate) / MAX_BPS) * 1e18 / totalxDeposits;
     }
 
-    function usdPerxBorrow() internal view returns (uint256) {
+    function usdPerxBorrow() public view returns (uint256) {
         if (totalxBorrows == 0) {
             return 1e18;
         }
@@ -256,7 +256,10 @@ contract GHALend is Ownable, ReentrancyGuard {
         uint256 fees = reward * feeRate / MAX_BPS;
         totalDeposits += (reward - fees);
         totalBorrows += reward;
-        USDC.transfer(treasury, fees / decimalAdj);
+        // treasury deposits fees back into protocol
+        xdeposits[treasury] += fees * 1e18/usdPerxDeposit();
+        totalxDeposits += reward * 1e18/usdPerxDeposit();
+        totalDeposits += fees;
     }
     function pendingInterest() internal view returns (uint256) {
         uint256 timepass = block.timestamp - lastUpdate;
@@ -274,37 +277,23 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function userLTV(address _user) public view returns (uint256) {
-        return xborrows[_user] * usdPerxBorrow() * MAX_BPS / valueOfDeposits(_user);
-    }
-
-    // automatically redeem half of a users deposits through GMD's vault and repay debt
-    function redeemAuto(address _user) external nonReentrant {
-        require(userLTV(_user) > liqThreshold, "GHALend: user not over thresh");
-        uint256 gmdAmount = gmdDeposits[_user] / 2;
-        uint256 amount = GMDVault.leave(gmdAmount, pid);
-        _redeem(_user, address(this), amount);
-        // redundant checks:
-        // amount we repaid >= our cost
-        require(amount * decimalAdj * 1e18/usdPerGmdUSDC() >= gmdAmount);
-        require(userLTV(_user) > MAX_BPS - (MAX_BPS - liqThreshold) * 2, "GHALend: too much redemption");
+        if(valueOfDeposits(_user) == 0) {
+            return 0;
+        }
+        return xborrows[_user] * usdPerxBorrow() / valueOfDeposits(_user);
     }
 
     // redeem USDC -> gmdUSDC at redemption price with no deposit fee
     function redeem(address _user, uint256 _amount) external nonReentrant {
-        require(userLTV(_user) > liqThreshold, "GHALend: user not over thresh");
-        _redeem(_user, msg.sender, _amount);
-        require(userLTV(_user) > MAX_BPS - (MAX_BPS - liqThreshold) * 2, "GHALend: too much redemption");
-    }
-
-    function _redeem(address _user, address _executor, uint256 _amount) internal {
+        accrueInterest();
         uint256 gmdAmount = _amount * decimalAdj * 1e18/usdPerGmdUSDC();
-        if (_executor != address(this)) {
-            USDC.transferFrom(_executor, address(this), _amount);
-            gmdUSDC.transfer(_executor, gmdAmount);
-        }
-        borrows[_user] -= _amount;
+        USDC.transferFrom(msg.sender, address(this), _amount);
+        gmdUSDC.transfer(msg.sender, gmdAmount);
+        xborrows[_user] -= _amount * decimalAdj * 1e18/usdPerxBorrow();
         gmdDeposits[_user] -= gmdAmount;
-        emit Redeem(_user, _executor, _amount);
+        require(userLTV(_user) > redLTV * 1e18/MAX_BPS, "GHALend: too much redemption");
+        updateAPR();
+        emit Redeem(_user, msg.sender, _amount);
     }
 
     function updateMaxRate(uint256 _maxRate) external onlyOwner {
@@ -316,12 +305,12 @@ contract GHALend is Ownable, ReentrancyGuard {
         borrowCap = _borrowCap;
     }
 
-    function updateLTVs(uint256 _LTV, uint256 _liqThreshold) external onlyOwner {
+    function updateLTVs(uint256 _LTV, uint256 _redLTV) external onlyOwner {
         require(_LTV <= MAX_BPS, "out of range");
-        require(liqThreshold <= MAX_BPS, "out of range");
-        require(liqThreshold > _LTV, "too low");
+        require(redLTV <= MAX_BPS, "out of range");
+        require(redLTV > _LTV, "too low");
         LTV = _LTV;
-        liqThreshold = _liqThreshold;
+        redLTV = _redLTV;
     }
 
     function updateInterestRateCurve(uint256 _base, uint256 _slope1, uint256 _kink, uint256 _slope2) external onlyOwner {
