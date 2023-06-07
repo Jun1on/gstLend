@@ -149,12 +149,12 @@ contract GHALend is Ownable, ReentrancyGuard {
     function withdrawGmd(uint256 _amount) external nonReentrant {
         accrueInterest();
         uint256 freeUSD;
-        if (LTV == 0){
+        if (LTV == 0) {
             require(xborrows[msg.sender] == 0, "GHALend: Insufficient collateral");
             freeUSD = valueOfDeposits(msg.sender);
         } else {
             freeUSD = valueOfDeposits(msg.sender)
-                - xborrows[msg.sender] * usdPerxBorrow()/1e18 / LTV*MAX_BPS;
+                - xborrows[msg.sender] * usdPerxBorrow()/1e18 * MAX_BPS/LTV;
         }
         uint256 freeCollateral = freeUSD * 1e18/usdPerGmdUSDC();
         require(freeCollateral >= _amount, "GHALend: Insufficient collateral");
