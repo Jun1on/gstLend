@@ -252,8 +252,9 @@ contract GHALend is Ownable, ReentrancyGuard {
         totalDeposits += (reward - fees);
         totalBorrows += reward;
         // treasury deposits fees back into protocol
-        xdeposits[treasury] += fees * 1e18/usdPerxDeposit();
-        totalxDeposits += fees * 1e18/usdPerxDeposit();
+        uint256 usdPerxD = usdPerxDeposit();
+        xdeposits[treasury] += fees * 1e18/usdPerxD;
+        totalxDeposits += fees * 1e18/usdPerxD;
         totalDeposits += fees;
     }
     function pendingInterest() internal view returns (uint256) {
@@ -320,7 +321,6 @@ contract GHALend is Ownable, ReentrancyGuard {
         slope2 = _slope2;
     }
 
-    // treasury can be set to 0 address to pause all lending
     function changeFees(uint256 _feeRate, address _treasury) external onlyOwner {
         require(_feeRate <= MAX_BPS, "out of range");
         require(_treasury != address(0));
