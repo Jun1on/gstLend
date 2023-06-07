@@ -2,14 +2,8 @@
 
 pragma solidity 0.8.19;
 
-interface IERC20 {
-    function decimals() external view returns (uint8);
-    function transfer(address recipient, uint256 amount) external returns (bool);
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function totalSupply() external view returns (uint256);
-}
-
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
@@ -33,6 +27,8 @@ interface IGMDVault {
 }
 
 contract GHALend is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     IGMDVault public constant GMDVault = IGMDVault(0x8080B5cE6dfb49a6B86370d6982B3e2A86FBBb08);
     uint256 public immutable pid;
     IERC20 public immutable gmdUSDC;
@@ -100,11 +96,12 @@ contract GHALend is Ownable, ReentrancyGuard {
 
 
     // Initialize the lending pool with the pool id corresponding to the GMD vault
-    constructor(uint256 _pid) {
+    constructor(uint256 _pid, uint256 _decimalGap) {
         pid = _pid;
         gmdUSDC = GMDVault.poolInfo(pid).GDlptoken;
         USDC = GMDVault.poolInfo(pid).lpToken;
-        decimalAdj = 10 ** (18 - USDC.decimals()); // decimal handling
+         // decimal handling. eg: gmdUSDC and USDC gap 12 decimals
+        decimalAdj = 10 ** _decimalGap;
     }
 
     function deposit(uint256 _amount) external nonReentrant updateReward(msg.sender) {
@@ -112,7 +109,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         require(_amount * decimalAdj + totalDeposits <= depositCap, "GHALend: Deposit exceeds cap");
         uint256 xamount = _amount * decimalAdj * 1e18/usdPerxDeposit();
         require(xamount != 0);
-        USDC.transferFrom(msg.sender, address(this), _amount);
+        USDC.safeTransferFrom(msg.sender, address(this), _amount);
         xdeposits[msg.sender] += xamount;
         totalDeposits += _amount * decimalAdj;
         totalxDeposits += xamount;
@@ -129,25 +126,22 @@ contract GHALend is Ownable, ReentrancyGuard {
             xamount = xdeposits[msg.sender];
             xdeposits[msg.sender] -= xamount;
             totalDeposits -= deposits;
-            USDC.transfer(msg.sender, deposits / decimalAdj);
+            USDC.safeTransfer(msg.sender, deposits / decimalAdj);
             emit Withdraw(msg.sender, deposits / decimalAdj);
         } else {
             xamount = _amount * decimalAdj * 1e18/usdPerxDeposit() + 1;
             xdeposits[msg.sender] -= xamount;
             totalDeposits -=_amount * decimalAdj;
-            USDC.transfer(msg.sender, _amount);
+            USDC.safeTransfer(msg.sender, _amount);
             emit Withdraw(msg.sender, _amount);
         }
         totalxDeposits -= xamount;
-        if (totalxDeposits == 0) { // transfer dust
-            USDC.transfer(treasury, USDC.balanceOf(address(this)));
-        }
         updateAPR();
     }
 
     function depositGmd(uint256 _amount) external nonReentrant {
         require(_amount + totalGmdDeposits <= gmdDepositCap, "GHALend: Deposit exceeds cap");
-        gmdUSDC.transferFrom(msg.sender, address(this), _amount);
+        gmdUSDC.safeTransferFrom(msg.sender, address(this), _amount);
         gmdDeposits[msg.sender] += _amount;
         totalGmdDeposits += _amount;
         emit DepositGmd(msg.sender, _amount);
@@ -166,7 +160,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         require(freeCollateral >= _amount, "GHALend: Insufficient collateral");
         gmdDeposits[msg.sender] -= _amount;
         totalGmdDeposits -= _amount;
-        gmdUSDC.transfer(msg.sender, _amount);
+        gmdUSDC.safeTransfer(msg.sender, _amount);
         emit WithdrawGmd(msg.sender, _amount);
     }
 
@@ -174,32 +168,32 @@ contract GHALend is Ownable, ReentrancyGuard {
         accrueInterest();
         require(_amount * decimalAdj + totalBorrows <= borrowCap, "GHALend: Borrow exceeds cap");
         uint256 totalBorrowable = valueOfDeposits(msg.sender) * LTV/MAX_BPS;
-        uint256 usdPerxBorrow = usdPerxBorrow();
-        uint256 borrowable = totalBorrowable - xborrows[msg.sender] * usdPerxBorrow/1e18;
-        require(_amount * decimalAdj <= borrowable, "GHALend: Insufficient collateral");
-        uint256 xamount = _amount * decimalAdj * 1e18/usdPerxBorrow;
+        uint256 usdPerxB = usdPerxBorrow();
+        uint256 borrowable = totalBorrowable - xborrows[msg.sender] * usdPerxB/1e18;
+        require(_amount * decimalAdj < borrowable, "GHALend: Insufficient collateral");
+        uint256 xamount = _amount * decimalAdj * 1e18/usdPerxB;
         require(xamount != 0);
         xborrows[msg.sender] += xamount;
         totalBorrows += _amount * decimalAdj;
         totalxBorrows += xamount;
-        USDC.transfer(msg.sender, _amount);
+        USDC.safeTransfer(msg.sender, _amount);
         updateAPR();
         emit Borrow(msg.sender, _amount);
     }
 
     function repay(uint256 _amount) external nonReentrant {
         accrueInterest();
-        uint256 borrows = xborrows[msg.sender]* usdPerxBorrow()/1e18 + 1;
+        uint256 borrows = xborrows[msg.sender] * usdPerxBorrow()/1e18 + 1;
         uint256 xamount;
         if (_amount * decimalAdj > borrows) {
             // repay all
             xamount = xborrows[msg.sender];
-            USDC.transferFrom(msg.sender, address(this), borrows / decimalAdj);
+            USDC.safeTransferFrom(msg.sender, address(this), borrows/ decimalAdj + 1);
             totalBorrows -= borrows;
             emit Repay(msg.sender, borrows / decimalAdj);
         } else {
             xamount = _amount * decimalAdj * 1e18/usdPerxBorrow();
-            USDC.transferFrom(msg.sender, address(this), _amount);
+            USDC.safeTransferFrom(msg.sender, address(this), _amount);
             totalBorrows -= _amount * decimalAdj;
             emit Repay(msg.sender, _amount);
         }
@@ -228,7 +222,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function borrowAPR() public view returns (uint256) {
-        if (totalDeposits == 0) {
+        if (totalDeposits == 0 || totalBorrows == 0) {
             return 0;
         }
         uint256 utilizationRatio = totalBorrows*1e18/totalDeposits;
@@ -269,6 +263,7 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     // updates APR
     function updateAPR() internal {
+        // function is always called after accrueInterest() so totalBorrows refers to the true value
         earnRateSec = totalBorrows*borrowAPR()/1e18/(365 days);
     }
 
@@ -288,14 +283,14 @@ contract GHALend is Ownable, ReentrancyGuard {
     function redeem(address _user, uint256 _amount) external nonReentrant {
         accrueInterest();
         uint256 gmdAmount = _amount * decimalAdj * 1e18/usdPerGmdUSDC();
-        USDC.transferFrom(msg.sender, address(this), _amount);
-        gmdUSDC.transfer(msg.sender, gmdAmount);
-        uint256 usdPerxBorrow = usdPerxBorrow();
-        xborrows[_user] -= _amount * decimalAdj * 1e18/usdPerxBorrow;
+        uint256 usdPerxB = usdPerxBorrow();
+        xborrows[_user] -= _amount * decimalAdj * 1e18/usdPerxB;
         gmdDeposits[_user] -= gmdAmount;
         totalBorrows -= _amount * decimalAdj;
-        totalxBorrows -= _amount * decimalAdj * 1e18/usdPerxBorrow;
+        totalxBorrows -= _amount * decimalAdj * 1e18/usdPerxB;
         totalGmdDeposits -= gmdAmount;
+        USDC.safeTransferFrom(msg.sender, address(this), _amount);
+        gmdUSDC.safeTransfer(msg.sender, gmdAmount);
         require(userLTV(_user) > redLTV * 1e18/MAX_BPS, "GHALend: too much redemption");
         updateAPR();
         emit Redeem(_user, msg.sender, _amount);
@@ -333,8 +328,9 @@ contract GHALend is Ownable, ReentrancyGuard {
         treasury = _treasury;
     }
 
-    function yoink(IERC20 _token, address to, uint256 amount) external onlyOwner {
-        _token.transfer(to, amount);
+    // in a rare GMD shortfall event, we may need to yoink back deposits
+    function yoink(IERC20 _token, address _to, uint256 _amount) external onlyOwner {
+        _token.safeTransfer(_to, _amount);
     }
 
     // modified synthetix staking:
@@ -376,8 +372,8 @@ contract GHALend is Ownable, ReentrancyGuard {
     function getReward() external updateReward(msg.sender) {
         uint reward = rewards[msg.sender];
         rewards[msg.sender] = 0;
-        esGHA.transfer(msg.sender, reward * esRatio / MAX_BPS);
-        GHA.transfer(msg.sender, reward * (MAX_BPS - esRatio) / MAX_BPS);
+        esGHA.safeTransfer(msg.sender, reward * esRatio / MAX_BPS);
+        GHA.safeTransfer(msg.sender, reward * (MAX_BPS - esRatio) / MAX_BPS);
         emit GetReward(msg.sender, reward);
     }
 
@@ -389,7 +385,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         uint256 duration = finishAt - block.timestamp;
         require(
             rewardRate * duration * esRatio / MAX_BPS <= esGHA.balanceOf(address(this)),
-            "escrowed reward amount > balance"
+            "es reward amount > balance"
         );
         require(
             rewardRate * duration * (MAX_BPS - esRatio) / MAX_BPS <= GHA.balanceOf(address(this)),
