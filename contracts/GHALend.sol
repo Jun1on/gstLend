@@ -37,7 +37,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     uint256 public immutable pid;
     IERC20 public immutable gmdUSDC;
     IERC20 public immutable USDC;
-    uint256 private decimalAdj;
+    uint256 private immutable decimalAdj;
 
     uint256 public totalDeposits;
     uint256 public totalxDeposits;
@@ -56,8 +56,8 @@ contract GHALend is Ownable, ReentrancyGuard {
     uint256 public borrowCap     = 10000 * 1e18;
 
     uint256 constant MAX_BPS = 1e4;
-    uint256 public LTV       = 0.8 * 1e4;   // can borrow up to 80% LTV
-    uint256 public redLTV    = 0.9 * 1e4;  // can be redeemed against past 90% LTV
+    uint256 public LTV       = 0.8 * 1e4;  // can borrow up to 80% LTV
+    uint256 public redLTV    = 0.9 * 1e4;  // can be redeemed against above 90% LTV
 
     uint256 public base   = 2 * 1e16;    // 2%
     uint256 public slope1 = 0.1 * 1e16;  // 0.1%
@@ -68,7 +68,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     uint256 public lastUpdate;
 
     uint256 feeRate = 2500;
-    address public treasury = 0x03851F30cC29d86EE87a492f037B16642838a357;
+    address public treasury = 0x52D16E8550785F3F1073632bC54dAa2e07e60C1c;
 
     // Ratio to be paid out in esGHA
     uint256 esRatio = 8000;
@@ -174,9 +174,10 @@ contract GHALend is Ownable, ReentrancyGuard {
         accrueInterest();
         require(_amount * decimalAdj + totalBorrows <= borrowCap, "GHALend: Borrow exceeds cap");
         uint256 totalBorrowable = valueOfDeposits(msg.sender) * LTV/MAX_BPS;
-        uint256 borrowable = totalBorrowable - xborrows[msg.sender] * usdPerxBorrow()/1e18;
+        uint256 usdPerxBorrow = usdPerxBorrow();
+        uint256 borrowable = totalBorrowable - xborrows[msg.sender] * usdPerxBorrow/1e18;
         require(_amount * decimalAdj <= borrowable, "GHALend: Insufficient collateral");
-        uint256 xamount = _amount * decimalAdj * 1e18/usdPerxBorrow();
+        uint256 xamount = _amount * decimalAdj * 1e18/usdPerxBorrow;
         require(xamount != 0);
         xborrows[msg.sender] += xamount;
         totalBorrows += _amount * decimalAdj;
@@ -258,7 +259,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         totalBorrows += reward;
         // treasury deposits fees back into protocol
         xdeposits[treasury] += fees * 1e18/usdPerxDeposit();
-        totalxDeposits += reward * 1e18/usdPerxDeposit();
+        totalxDeposits += fees * 1e18/usdPerxDeposit();
         totalDeposits += fees;
     }
     function pendingInterest() internal view returns (uint256) {
@@ -289,8 +290,12 @@ contract GHALend is Ownable, ReentrancyGuard {
         uint256 gmdAmount = _amount * decimalAdj * 1e18/usdPerGmdUSDC();
         USDC.transferFrom(msg.sender, address(this), _amount);
         gmdUSDC.transfer(msg.sender, gmdAmount);
-        xborrows[_user] -= _amount * decimalAdj * 1e18/usdPerxBorrow();
+        uint256 usdPerxBorrow = usdPerxBorrow();
+        xborrows[_user] -= _amount * decimalAdj * 1e18/usdPerxBorrow;
         gmdDeposits[_user] -= gmdAmount;
+        totalBorrows -= _amount * decimalAdj;
+        totalxBorrows -= _amount * decimalAdj * 1e18/usdPerxBorrow;
+        totalGmdDeposits -= gmdAmount;
         require(userLTV(_user) > redLTV * 1e18/MAX_BPS, "GHALend: too much redemption");
         updateAPR();
         emit Redeem(_user, msg.sender, _amount);
