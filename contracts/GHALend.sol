@@ -46,7 +46,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     mapping(address => uint256) public gmdDeposits;
 
     // security caps
-    uint256 public maxRate = 999 * 1e18; // change before deployment
+    uint256 public maxRate = 1.2 * 1e18; // change before deployment
     uint256 public depositCap    = 20000 * 1e18;
     uint256 public gmdDepositCap = 10000 * 1e18;
     uint256 public borrowCap     = 10000 * 1e18;
@@ -298,6 +298,7 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function updateMaxRate(uint256 _maxRate) external onlyOwner {
+        require (_maxRate < maxRate * 3/2 && _maxRate > maxRate * 2/3, "too much change");
         maxRate = _maxRate;
     }
     function setCaps(uint256 _depositCap, uint256 _gmdDepositCap, uint256 _borrowCap) external onlyOwner {
