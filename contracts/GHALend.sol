@@ -207,18 +207,18 @@ contract GHALend is Ownable, ReentrancyGuard {
         return _min(GMDVault.GDpriceToStakedtoken(pid), maxRate);
     }
 
-    function usdPerxDeposit() public view returns (uint256) {
+    function usdPerxDeposit() internal view returns (uint256) {
         if (totalxDeposits == 0) {
             return 1e18;
         }
-        return (totalDeposits + pendingInterest() * (MAX_BPS - feeRate) / MAX_BPS) * 1e18 / totalxDeposits;
+        return totalDeposits * 1e18 / totalxDeposits;
     }
 
-    function usdPerxBorrow() public view returns (uint256) {
+    function usdPerxBorrow() internal view returns (uint256) {
         if (totalxBorrows == 0) {
             return 1e18;
         }
-        return (totalBorrows + pendingInterest()) * 1e18 / totalxBorrows;
+        return totalBorrows * 1e18 / totalxBorrows;
     }
 
     function borrowAPR() public view returns (uint256) {
@@ -275,7 +275,7 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     function userLTV(address _user) public view returns (uint256) {
         if(valueOfDeposits(_user) == 0) {
-            return 0;
+            return type(uint256).max;
         }
         return xborrows[_user] * usdPerxBorrow() / valueOfDeposits(_user);
     }
@@ -398,7 +398,21 @@ contract GHALend is Ownable, ReentrancyGuard {
         return x <= y ? x : y;
     }
 
-    // ui helper
+    // ui helpers
+    function pendingUsdPerxDeposit() external view returns (uint256) {
+        if (totalxDeposits == 0) {
+            return 1e18;
+        }
+        return (totalDeposits + pendingInterest() * (MAX_BPS - feeRate) / MAX_BPS) * 1e18 / totalxDeposits;
+    }
+
+    function pendingUsdPerxBorrow() external view returns (uint256) {
+        if (totalxBorrows == 0) {
+            return 1e18;
+        }
+        return (totalBorrows + pendingInterest()) * 1e18 / totalxBorrows;
+    }
+
     function depositAPR() external view returns (uint256) {
         return borrowAPR() * totalBorrows / totalDeposits * (MAX_BPS - feeRate) / MAX_BPS;
     }
