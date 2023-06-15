@@ -161,6 +161,7 @@ contract GHALend is Ownable, ReentrancyGuard {
         gmdDeposits[msg.sender] -= _amount;
         totalGmdDeposits -= _amount;
         gmdUSDC.safeTransfer(msg.sender, _amount);
+        updateAPR();
         emit WithdrawGmd(msg.sender, _amount);
     }
 
@@ -282,6 +283,8 @@ contract GHALend is Ownable, ReentrancyGuard {
 
     // redeem USDC -> gmdUSDC at redemption price with no deposit fee
     function redeem(address _user, uint256 _amount) external nonReentrant {
+        require(_amount != 0);
+        require(_user != msg.sender, "GHALend: can't redeem yourself");
         accrueInterest();
         uint256 gmdAmount = _amount * decimalAdj * 1e18/usdPerGmdUSDC();
         uint256 usdPerxB = usdPerxBorrow();
@@ -323,10 +326,12 @@ contract GHALend is Ownable, ReentrancyGuard {
     }
 
     function changeFees(uint256 _feeRate, address _treasury) external onlyOwner {
+        accrueInterest();
         require(_feeRate <= MAX_BPS, "out of range");
         require(_treasury != address(0));
         feeRate = _feeRate;
         treasury = _treasury;
+        updateAPR();
     }
 
     // in a rare GMD shortfall event, we may need to yoink back deposits
